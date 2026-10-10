@@ -3,7 +3,7 @@
 AntiDupe is an Endstone plugin that limits Bedrock Edition Bundle/container duplication vectors. It blocks suspicious inventory requests around selected high-risk containers, quarantines contaminated sessions, and can rebuild contaminated hoppers as a destructive fallback.
 
 **Version:** 0.2.3  
-**Requirements:** Python 3.11+; Endstone API 0.11 (as declared by the plugin).  
+**Requirements:** Python 3.11–3.15 (CI-tested); Endstone API 0.11 (as declared by the plugin).  
 **License:** GPL-3.0-only.
 
 ## Protection
@@ -63,6 +63,6 @@ uv run pytest
 uv build --wheel
 ```
 
-The test suite mocks the Endstone host API; passing it is not a substitute for an in-server integration test. CI builds and verifies wheel metadata and contents without deploying to a server or publishing a release.
+The test suite mocks the Endstone host API; passing it is not a substitute for an in-server integration test. Python 3.15 support here refers to the pure-Python plugin and its universal wheel; running a BDS server on Python 3.15 also requires a compatible native Endstone distribution. CI builds and verifies wheel metadata and contents without deploying to a server or publishing a release.
 
 Historical profiling notes are in [`docs/performance.md`](docs/performance.md).

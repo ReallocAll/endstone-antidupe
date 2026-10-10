@@ -16,13 +16,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v6
+      - name: Install Python
+        run: uv python install "${{ matrix.python-version }}"
       - name: Install project and tools
         run: uv sync --extra dev --python "${{ matrix.python-version }}"
       - name: Static analysis
