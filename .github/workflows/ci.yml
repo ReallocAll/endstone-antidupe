@@ -61,3 +61,32 @@ jobs:
           name: endstone-antidupe-py${{ matrix.python-version }}
           path: dist/*.whl
           if-no-files-found: error
+
+  audit-annotations:
+    name: Audit annotations
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+    steps:
+      - name: Inspect Python check-run annotations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.name | startswith("Python ")) | .id' > "${RUNNER_TEMP}/antidupe-check-ids"
+          test "$(wc -l < "${RUNNER_TEMP}/antidupe-check-ids")" -eq 5
+
+          problems=0
+          while IFS= read -r check_id; do
+            echo "Check run ${check_id}:"
+            annotations=$(gh api "repos/${GITHUB_REPOSITORY}/check-runs/${check_id}/annotations?per_page=100")
+            echo "${annotations}" | jq -r '.[] | "  [\(.annotation_level)] \(.title // "untitled"): \(.message) (\(.path):\(.start_line // 0))"'
+            count=$(echo "${annotations}" | jq '[.[] | select(.annotation_level == "warning" or .annotation_level == "failure")] | length')
+            problems=$((problems + count))
+          done < "${RUNNER_TEMP}/antidupe-check-ids"
+
+          echo "Warning/error annotations: ${problems}"
+          test "${problems}" -eq 0
