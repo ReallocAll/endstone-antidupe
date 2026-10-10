@@ -21,7 +21,7 @@ jobs:
       - name: Configure Git default branch
         run: git config --global init.defaultBranch main
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           enable-cache: false
       - name: Install Python
