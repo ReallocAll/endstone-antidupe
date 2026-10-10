@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v6
+      - name: Install project and tools
+        run: uv sync --extra dev --python "${{ matrix.python-version }}"
+      - name: Static analysis
+        run: uv run --no-sync ruff check .
+      - name: Tests
+        run: uv run --no-sync pytest
+      - name: Build wheel
+        run: uv build --wheel --out-dir dist
+      - name: Install wheel and validate metadata
+        run: |
+          uv pip install --python .venv/bin/python --no-deps --force-reinstall dist/*.whl
+          uv run --no-sync python - <<'PYCODE'
+          from importlib.metadata import distribution
+          from pathlib import Path
+          import zipfile
+
+          dist = distribution("endstone-antidupe")
+          assert dist.version == "0.2.3", dist.version
+          entry_points = [ep for ep in dist.entry_points if ep.group == "endstone"]
+          assert len(entry_points) == 1
+          assert entry_points[0].name == "antidupe"
+          assert entry_points[0].value == "endstone_antidupe:AntiDupe"
+          wheel_path, = Path("dist").glob("*.whl")
+          with zipfile.ZipFile(wheel_path) as wheel:
+              names = wheel.namelist()
+              assert "endstone_antidupe/plugin.py" in names
+              assert "endstone_antidupe/protocol.py" in names
+              assert not any(".egg-info" in item or item.startswith("tests/") for item in names)
+          print("Wheel entry point, version, installation and contents verified")
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: endstone-antidupe-py${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error

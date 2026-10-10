@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Build outputs
+dist/
+build/
+*.whl
+*.tar.gz
+
+# Local/server data
+.env
+.env.*
+!.env.example
+plugins/
+config.toml
+*.db
+*.sqlite*
+*.log
