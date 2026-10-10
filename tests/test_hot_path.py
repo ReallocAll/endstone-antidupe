@@ -5,7 +5,7 @@ from endstone_antidupe.constants import (
     PACKET_INVENTORY_CONTENT,
     PACKET_PLAYER_AUTH_INPUT,
 )
-from endstone_antidupe.state import ContainerCandidate, ContainerSession
+from endstone_antidupe.state import ContainerCandidate
 from .helpers import CountingPlayer, PacketEvent, auth_input_payload, make_plugin
 
 

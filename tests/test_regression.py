@@ -2,7 +2,6 @@ import time
 from types import SimpleNamespace
 from uuid import UUID
 
-from endstone_antidupe.config import Settings
 from endstone_antidupe.constants import (
     PACKET_INVENTORY_CONTENT,
     PACKET_INVENTORY_TRANSACTION,
