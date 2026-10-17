@@ -1,17 +1,19 @@
 # AntiDupe 0.2.3 Performance Review
 
+This report records the historical 0.2.3 implementation and measurements. Its packet lists, lifecycle behavior, and test count are not a description of the 0.2.4 dimension-transfer guard; see the [current README](../README.md) for that behavior. No new benchmark results are implied by this translation.
+
 ## Baseline
 
-输入 profile 报告的基准热点：
+Baseline hotspots in the supplied profile report:
 
 - `AntiDupe.on_packet_send` ≈ 7.16 ms/tick
 - `AntiDupe._player_key` ≈ 5.38 ms/tick
-- Python UUID 路径 ≈ 2.98 ms/tick
-- ActorMotionSync 高频发包会把 AntiDupe packet listener 成本持续放大
+- Python UUID path ≈ 2.98 ms/tick
+- Frequent ActorMotionSync packets continually amplify the AntiDupe packet listener cost
 
 ## 0.2.1 hot path
 
-Outbound 旧路径：
+Old outbound path:
 
 ```text
 PacketSendEvent
@@ -21,12 +23,12 @@ PacketSendEvent
 → C++ UUID -> Python uuid.UUID
 → str(UUID)
 → time.monotonic
-→ 才判断 packet_id
+→ only then check packet_id
 ```
 
-因此任何实体同步 packet 都会支付 player/UUID/string 成本。
+Every entity synchronization packet therefore incurred the player/UUID/string costs.
 
-Inbound 旧路径：
+Old inbound path:
 
 ```text
 PacketReceiveEvent
@@ -34,13 +36,13 @@ PacketReceiveEvent
 → _player_key / UUID string
 → session lookup
 → _session_is_unsafe
-→ 可能扫描 player.inventory
-→ 才区分 144 / 30 / 147
+→ possibly scan player.inventory
+→ only then distinguish 144 / 30 / 147
 ```
 
 ## 0.2.3 hot path
 
-普通 outbound packet：
+Ordinary outbound packet:
 
 ```text
 PacketSendEvent
@@ -49,7 +51,7 @@ PacketSendEvent
 → return
 ```
 
-普通 inbound packet：
+Ordinary inbound packet:
 
 ```text
 PacketReceiveEvent
@@ -58,7 +60,7 @@ PacketReceiveEvent
 → return
 ```
 
-`PlayerAuthInput(144)`：
+`PlayerAuthInput(144)`:
 
 ```text
 packet_id
@@ -72,7 +74,7 @@ packet_id
 → only then possibly inventory scan/cancel
 ```
 
-普通 ActorMotionSync packet 不读取 `event.player`、payload、UUID、inventory 或 world。
+Ordinary ActorMotionSync packets do not read `event.player`, payload, UUID, inventory, or world state.
 
 ## Identity cache
 

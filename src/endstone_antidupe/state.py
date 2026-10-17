@@ -46,7 +46,20 @@ class PlayerRuntimeState:
 
 
 @dataclass(slots=True)
+class DimensionTransfer:
+    """Object identity distinguishes successive transfers on one connection."""
+
+    target: int | None
+    quarantined: bool = False
+    blocked_count: int = 0
+
+
+@dataclass(slots=True)
 class Counters:
+    transfers_started: int = 0
+    transfers_completed: int = 0
+    transfers_quarantined: int = 0
+    transfer_packets_blocked: int = 0
     blocked_opens: int = 0
     blocked_direct_transactions: int = 0
     blocked_auth_input_requests: int = 0

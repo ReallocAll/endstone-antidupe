@@ -40,10 +40,12 @@ jobs:
           uv run --no-sync python - <<'PYCODE'
           from importlib.metadata import distribution
           from pathlib import Path
+          import tomllib
           import zipfile
 
           dist = distribution("endstone-antidupe")
-          assert dist.version == "0.2.3", dist.version
+          expected_version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          assert dist.version == expected_version, dist.version
           entry_points = [ep for ep in dist.entry_points if ep.group == "endstone"]
           assert len(entry_points) == 1
           assert entry_points[0].name == "antidupe"

@@ -28,6 +28,9 @@ class PlayerDimensionChangeEvent(_BaseEvent): ...
 class PlayerInteractActorEvent(_BaseEvent): ...
 class PlayerJoinEvent(_BaseEvent): ...
 class PlayerQuitEvent(_BaseEvent): ...
+class PlayerKickEvent(_BaseEvent): ...
+class EventPriority:
+    HIGHEST = 4
 
 
 class PlayerInteractEvent(_BaseEvent):
@@ -48,6 +51,8 @@ for cls in [
     PlayerInteractEvent,
     PlayerJoinEvent,
     PlayerQuitEvent,
+    PlayerKickEvent,
+    EventPriority,
 ]:
     setattr(event, cls.__name__, cls)
 event.event_handler = _event_handler

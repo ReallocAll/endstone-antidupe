@@ -7,20 +7,26 @@ from .constants import DEFAULT_REBUILD_CONTAINER_TYPES
 import tomllib
 
 DEFAULT_PLAYER_MESSAGE = (
-    "§c[AntiDupe] 收纳袋不能与该类容器进行库存交互。"
-    "请先将收纳袋存入普通箱子/木桶。"
+    "§c[AntiDupe] Bundles cannot interact with this container. "
+    "Store the Bundle in a normal chest or barrel first."
+)
+DEFAULT_DIMENSION_TRANSFER_KICK_MESSAGE = (
+    "[AntiDupe] Dimension transfer did not complete safely. Please reconnect."
 )
 
-DEFAULT_CONFIG = '''# antidupe 0.2.3
+DEFAULT_CONFIG = '''# antidupe 0.2.4
 # Bundle / high-risk-container protection.
 
 enabled = true
 alert-ops = true
 log-attempts = true
-player-message = "§c[AntiDupe] 收纳袋不能与该类容器进行库存交互。请先将收纳袋存入普通箱子/木桶。"
+player-message = "§c[AntiDupe] Bundles cannot interact with this container. Store the Bundle in a normal chest or barrel first."
 
 block-open-with-bundle = true
 guard-player-auth-input = true
+guard-dimension-transfer = true
+dimension-transfer-timeout-seconds = 10.0
+dimension-transfer-kick-message = "[AntiDupe] Dimension transfer did not complete safely. Please reconnect."
 quarantine-contaminated-session = true
 
 # Destructive fail-safe. A confirmed Bundle inside one of these block containers
@@ -46,6 +52,9 @@ class Settings:
     player_message: str = DEFAULT_PLAYER_MESSAGE
     block_open_with_bundle: bool = True
     guard_player_auth_input: bool = True
+    guard_dimension_transfer: bool = True
+    dimension_transfer_timeout_seconds: float = 10.0
+    dimension_transfer_kick_message: str = DEFAULT_DIMENSION_TRANSFER_KICK_MESSAGE
     quarantine_contaminated_session: bool = True
     rebuild_on_contamination: bool = True
     rebuild_container_types: tuple[str, ...] = DEFAULT_REBUILD_CONTAINER_TYPES
@@ -58,6 +67,10 @@ class Settings:
 
 def _as_bool(value: object, default: bool) -> bool:
     return value if isinstance(value, bool) else default
+
+
+def _as_message(value: object, default: str) -> str:
+    return value if isinstance(value, str) and value.strip() else default
 
 
 def _as_float(value: object, default: float, minimum: float, maximum: float) -> float:
@@ -97,17 +110,18 @@ def load_settings(data_folder: Path) -> Settings:
     except Exception:
         raw = {}
 
-    msg = raw.get("player-message", DEFAULT_PLAYER_MESSAGE)
-    if not isinstance(msg, str) or not msg:
-        msg = DEFAULT_PLAYER_MESSAGE
-
     return Settings(
         enabled=_as_bool(raw.get("enabled"), True),
         alert_ops=_as_bool(raw.get("alert-ops"), True),
         log_attempts=_as_bool(raw.get("log-attempts"), True),
-        player_message=msg,
+        player_message=_as_message(raw.get("player-message"), DEFAULT_PLAYER_MESSAGE),
         block_open_with_bundle=_as_bool(raw.get("block-open-with-bundle"), True),
         guard_player_auth_input=_as_bool(raw.get("guard-player-auth-input"), True),
+        guard_dimension_transfer=_as_bool(raw.get("guard-dimension-transfer"), True),
+        dimension_transfer_timeout_seconds=_as_float(raw.get("dimension-transfer-timeout-seconds"), 10.0, 1.0, 120.0),
+        dimension_transfer_kick_message=_as_message(
+            raw.get("dimension-transfer-kick-message"), DEFAULT_DIMENSION_TRANSFER_KICK_MESSAGE,
+        ),
         quarantine_contaminated_session=_as_bool(raw.get("quarantine-contaminated-session"), True),
         rebuild_on_contamination=_as_bool(raw.get("rebuild-on-contamination"), True),
         rebuild_container_types=_as_container_types(raw.get("rebuild-container-types")),

@@ -22,12 +22,21 @@ class FakeScheduler:
         self.tasks.append((task, delay, period))
         return task
 
+    def cancel_tasks(self, plugin):
+        self.tasks.clear()
+
+    def run_next(self):
+        task, delay, _ = self.tasks.pop(0)
+        task()
+        return delay
+
 
 class FakeServer:
     def __init__(self):
         self.online_players = []
         self.scheduler = FakeScheduler()
         self.level = SimpleNamespace(dimensions=[])
+        self.protocol_version = 2193
 
 
 class CountingPlayer:
@@ -42,6 +51,7 @@ class CountingPlayer:
         self.name_reads = 0
         self.inventory_reads = 0
         self.messages = []
+        self.kicks = []
 
     @property
     def runtime_id(self):
@@ -69,6 +79,9 @@ class CountingPlayer:
 
     def send_message(self, msg):
         self.messages.append(msg)
+
+    def kick(self, msg):
+        self.kicks.append(msg)
 
 
 class PacketEvent:
@@ -112,6 +125,8 @@ def make_plugin(*, perf=False, settings=None):
     p._candidates = {}
     p._sessions = {}
     p._players = {}
+    p._transfers = {}
+    p._transfer_guard_enabled = True
     p._stats = Counters()
     p._perf = PerfCounters()
     p._report_state = {}
@@ -123,6 +138,13 @@ def make_plugin(*, perf=False, settings=None):
     p.logger = NullLogger()
     p.data_folder = '/tmp/antidupe-test'
     return p
+
+
+def auth_input_2193(flags=(), optionals=b'\x00\x00\x00'):
+    return (bytes(32) + encode_varuint(len(flags))
+            + b''.join(encode_varuint((f << 1) ^ (f >> 31)) for f in flags)
+            + b'\x02\x00\x02' + bytes(8) + b'\x01' + bytes(12)
+            + optionals + bytes(2 + 28))
 
 
 def encode_varuint(value: int) -> bytes:

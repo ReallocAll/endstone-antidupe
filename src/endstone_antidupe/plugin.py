@@ -1,15 +1,18 @@
 import time
+import math
 from pathlib import Path
 from typing import Any
 
 from endstone.command import Command, CommandSender
 from endstone.event import (
+    EventPriority,
     PacketReceiveEvent,
     PacketSendEvent,
     PlayerDimensionChangeEvent,
     PlayerInteractActorEvent,
     PlayerInteractEvent,
     PlayerJoinEvent,
+    PlayerKickEvent,
     PlayerQuitEvent,
     event_handler,
 )
@@ -18,25 +21,37 @@ from endstone.plugin import Plugin
 from .config import Settings, load_settings
 from .constants import (
     DIRECT_TRANSACTION_PACKET_IDS,
+    PACKET_CHANGE_DIMENSION,
     PACKET_CONTAINER_CLOSE,
     PACKET_CONTAINER_OPEN,
     PACKET_PLAYER_AUTH_INPUT,
+    PACKET_PLAYER_ACTION,
+    PACKET_SERVERBOUND_LOADING_SCREEN,
     RECEIVE_RELEVANT_PACKET_IDS,
     RESTRICTED_BLOCK_CONTAINERS,
     RESTRICTED_ENTITY_CONTAINERS,
     SEND_RELEVANT_PACKET_IDS,
+    TRANSFER_LIVENESS_PACKET_IDS,
+    TRANSFER_PROTOCOL_VERSION,
+    TRANSFER_TERRAIN_PACKET_IDS,
     is_bundle_type,
 )
 from .protocol import (
+    change_dimension_target,
     container_open_id,
     inventory_sync_container_id,
     player_auth_input_has_stack_request,
+    transfer_auth_input_allowed,
+    transfer_loading_screen_allowed,
+    transfer_player_action_allowed,
+    transfer_terrain_packet_allowed,
 )
 from .rebuild import rebuild_block
 from .state import (
     ContainerCandidate,
     ContainerSession,
     Counters,
+    DimensionTransfer,
     PerfCounters,
     PlayerRuntimeState,
 )
@@ -73,6 +88,7 @@ class AntiDupe(Plugin):
         self._candidates: dict[PlayerKey, ContainerCandidate] = {}
         self._sessions: dict[PlayerKey, ContainerSession] = {}
         self._players: dict[PlayerKey, PlayerRuntimeState] = {}
+        self._transfers: dict[PlayerKey, DimensionTransfer] = {}
         self._stats = Counters()
         self._perf = PerfCounters()
         self._report_state: dict[ReportKey, tuple[float, int]] = {}
@@ -80,27 +96,31 @@ class AntiDupe(Plugin):
         self._pending_rebuilds: set[BlockKey] = set()
         self._settings = self._load_settings_with_log()
         self._perf_enabled = self._settings.perf_counters
+        self._configure_transfer_guard()
 
         self.register_events(self)
         self.server.scheduler.run_task(self, self._cleanup_expired, delay=100, period=100)
 
-        # This also handles plugin reload while players are already online.
-        try:
-            for player in self.server.online_players:
-                self._register_player(player, reset_existing=True)
-        except Exception:
-            pass
+        # Enabling mid-connection cannot establish whether a transfer was missed.
+        for player in self.server.online_players:
+            key = self._register_player(player, reset_existing=True)
+            if self._transfer_guard_enabled:
+                record = DimensionTransfer(target=None)
+                self._transfers[key] = record
+                self._quarantine_transfer(key, self._players[key], record, "enabled mid-connection")
 
         state = "ON" if self._settings.enabled else "OFF"
         auth_guard = "ON" if self._settings.guard_player_auth_input else "OFF"
         rebuild_guard = "ON" if self._settings.rebuild_on_contamination else "OFF"
         self.logger.info(
-            f"antidupe 0.2.3 enabled: Bundle/container guard is {state}; "
+            f"antidupe 0.2.4 enabled: Bundle/container guard is {state}; "
             f"PlayerAuthInput guard={auth_guard}; rebuild fail-safe={rebuild_guard}; "
             f"perf counters={'ON' if self._perf_enabled else 'OFF'}."
         )
 
     def on_disable(self) -> None:
+        self.server.scheduler.cancel_tasks(self)
+        self._transfers.clear()
         self._candidates.clear()
         self._sessions.clear()
         self._players.clear()
@@ -111,8 +131,7 @@ class AntiDupe(Plugin):
 
     @event_handler
     def on_player_join(self, event: PlayerJoinEvent) -> None:
-        if not self._settings.enabled:
-            return
+        # Always replace the token, even when new protection is disabled.
         self._register_player(event.player, reset_existing=True)
 
     @event_handler(ignore_cancelled=True)
@@ -227,9 +246,9 @@ class AntiDupe(Plugin):
             created_at=time.monotonic(),
         )
 
-    @event_handler(ignore_cancelled=True)
+    @event_handler(ignore_cancelled=False)
     def on_packet_send(self, event: PacketSendEvent) -> None:
-        if not self._settings.enabled:
+        if not self._settings.enabled and not self._transfers:
             return
 
         # CRITICAL HOT PATH: packet_id must be the first native property read.
@@ -240,6 +259,27 @@ class AntiDupe(Plugin):
             perf = self._perf
             perf.packet_send_calls += 1
             perf.send_by_packet_id[packet_id] = perf.send_by_packet_id.get(packet_id, 0) + 1
+
+        if packet_id == PACKET_CHANGE_DIMENSION:
+            # Cancelling delivery does not roll back the server's transfer.
+            if not self._transfer_guard_enabled and not self._transfers:
+                return
+            player = event.player
+            if player is None:
+                return
+            key = int(player.runtime_id)
+            if self._transfer_guard_enabled or key in self._transfers:
+                key = self._player_key(player)
+                # A quarantined connection stays quarantined until actual quit.
+                current = self._transfers.get(key)
+                if current is None or not current.quarantined:
+                    if self._perf_enabled:
+                        self._perf.payload_reads += 1
+                    self._start_transfer(key, event.payload)
+            return
+
+        if not self._settings.enabled or event.is_cancelled:
+            return
 
         if packet_id not in SEND_RELEVANT_PACKET_IDS:
             if self._perf_enabled:
@@ -350,7 +390,7 @@ class AntiDupe(Plugin):
 
     @event_handler(ignore_cancelled=True)
     def on_packet_receive(self, event: PacketReceiveEvent) -> None:
-        if not self._settings.enabled:
+        if not self._settings.enabled and not self._transfers:
             return
 
         # Same rule as outbound: irrelevant packet IDs must never touch player,
@@ -360,6 +400,45 @@ class AntiDupe(Plugin):
             perf = self._perf
             perf.packet_receive_calls += 1
             perf.receive_by_packet_id[packet_id] = perf.receive_by_packet_id.get(packet_id, 0) + 1
+
+        # With an active guard every application packet may need cancellation.
+        # Ordinary connections pay only a runtime-id read, never a UUID lookup.
+        if self._transfers:
+            player = event.player
+            if player is not None:
+                key = int(player.runtime_id)
+                record = self._transfers.get(key)
+                if record is not None:
+                    if record.quarantined:
+                        allowed = False  # No payload read in quarantine.
+                    elif packet_id in TRANSFER_LIVENESS_PACKET_IDS:
+                        allowed = True
+                    elif packet_id in (PACKET_PLAYER_ACTION, PACKET_PLAYER_AUTH_INPUT):
+                        if self._perf_enabled:
+                            self._perf.payload_reads += 1
+                        allowed = (transfer_player_action_allowed(event.payload)
+                                   if packet_id == PACKET_PLAYER_ACTION
+                                   else transfer_auth_input_allowed(event.payload))
+                    elif packet_id == PACKET_SERVERBOUND_LOADING_SCREEN:
+                        if self._perf_enabled:
+                            self._perf.payload_reads += 1
+                        allowed = transfer_loading_screen_allowed(event.payload)
+                    elif packet_id in TRANSFER_TERRAIN_PACKET_IDS:
+                        if self._perf_enabled:
+                            self._perf.payload_reads += 1
+                        allowed = transfer_terrain_packet_allowed(packet_id, event.payload)
+                    else:
+                        allowed = False
+                    if not allowed:
+                        event.is_cancelled = True
+                        self._stats.transfer_packets_blocked += 1
+                        record.blocked_count += 1
+                        if record.blocked_count == 1:
+                            self.logger.warning(f"[AntiDupe] Transfer {key}: first blocked packet {packet_id}.")
+                    return
+
+        if not self._settings.enabled:
+            return
 
         if packet_id not in RECEIVE_RELEVANT_PACKET_IDS:
             if self._perf_enabled:
@@ -445,8 +524,6 @@ class AntiDupe(Plugin):
 
     @event_handler
     def on_player_dimension_change(self, event: PlayerDimensionChangeEvent) -> None:
-        if not self._settings.enabled:
-            return
         try:
             key = int(event.player.runtime_id)
         except Exception:
@@ -454,6 +531,26 @@ class AntiDupe(Plugin):
         # Container windows cannot remain valid across dimensions. Keep the
         # connection identity cache, but drop all transient container state.
         self._clear_session_state(key)
+        record = self._transfers.get(key)
+        if record is None or record.quarantined or record.target != event.to_dimension.type.value:
+            return
+        token = self._players.get(key)
+
+        def release() -> None:
+            # The AFTER event's synchronous native cleanup finishes before the
+            # next scheduler heartbeat. Client ACK/movement cannot release this.
+            if self._transfer_is_current(key, token, record) and not record.quarantined:
+                self._transfers.pop(key)
+                self._stats.transfers_completed += 1
+                self.logger.info(f"[AntiDupe] Transfer {key}: completed.")
+
+        self.server.scheduler.run_task(self, release, delay=1)
+
+    @event_handler(priority=EventPriority.HIGHEST, ignore_cancelled=False)
+    def on_player_kick(self, event: PlayerKickEvent) -> None:
+        record = self._transfers.get(int(event.player.runtime_id))
+        if record is not None and record.quarantined:
+            event.is_cancelled = False
 
     @event_handler
     def on_player_quit(self, event: PlayerQuitEvent) -> None:
@@ -466,46 +563,52 @@ class AntiDupe(Plugin):
 
     def on_command(self, sender: CommandSender, command: Command, args: list[str]) -> bool:
         if not args:
-            sender.send_message("§6antidupe §f0.2.3")
-            sender.send_message("§e/antidupe status §7- 查看状态")
-            sender.send_message("§e/antidupe reload §7- 重载配置")
-            sender.send_message("§e/antidupe perf §7- 查看性能计数器")
+            sender.send_message("§6antidupe §f0.2.4")
+            sender.send_message("§e/antidupe status §7- View protection status")
+            sender.send_message("§e/antidupe reload §7- Reload configuration")
+            sender.send_message("§e/antidupe perf §7- View performance counters")
             return True
 
         sub = args[0].lower()
         if sub == "status":
             sender.send_message("§6=== AntiDupe ===")
-            sender.send_message(f"§7状态: {'§a启用' if self._settings.enabled else '§c关闭'}")
+            sender.send_message(f"§7Status: {'§aEnabled' if self._settings.enabled else '§cDisabled'}")
             sender.send_message(
-                f"§7PlayerAuthInput 防护: "
-                f"{'§a启用' if self._settings.guard_player_auth_input else '§c关闭'}"
+                f"§7PlayerAuthInput guard: "
+                f"{'§aEnabled' if self._settings.guard_player_auth_input else '§cDisabled'}"
             )
             sender.send_message(
-                f"§7污染后重建: "
-                f"{'§a启用' if self._settings.rebuild_on_contamination else '§c关闭'}"
+                f"§7Rebuild on contamination: "
+                f"{'§aEnabled' if self._settings.rebuild_on_contamination else '§cDisabled'}"
             )
             sender.send_message(
-                f"§7性能计数器: {'§a启用' if self._perf_enabled else '§8关闭'}"
+                f"§7Performance counters: {'§aEnabled' if self._perf_enabled else '§8Disabled'}"
             )
-            sender.send_message(f"§7连接缓存: §f{len(self._players)}")
-            sender.send_message(f"§7活动高风险容器会话: §f{len(self._sessions)}")
-            sender.send_message(f"§7全局隔离方块: §f{len(self._quarantined_blocks)}")
-            sender.send_message(f"§7已阻止打开: §f{self._stats.blocked_opens}")
-            sender.send_message(f"§7污染会话: §f{self._stats.contaminated_sessions}")
-            sender.send_message(f"§7已重建容器: §f{self._stats.rebuilt_containers}")
-            sender.send_message(f"§7重建失败: §f{self._stats.rebuild_failures}")
+            sender.send_message(f"§7Cached connections: §f{len(self._players)}")
             sender.send_message(
-                f"§7已阻止直接库存请求: §f{self._stats.blocked_direct_transactions}"
+                f"§7Dimension transfer guard: {self._transfer_guard_enabled}; active={len(self._transfers)}; "
+                f"started/completed/quarantined/blocked={self._stats.transfers_started}/"
+                f"{self._stats.transfers_completed}/{self._stats.transfers_quarantined}/"
+                f"{self._stats.transfer_packets_blocked}"
+            )
+            sender.send_message(f"§7Active high-risk container sessions: §f{len(self._sessions)}")
+            sender.send_message(f"§7Globally quarantined blocks: §f{len(self._quarantined_blocks)}")
+            sender.send_message(f"§7Blocked opens: §f{self._stats.blocked_opens}")
+            sender.send_message(f"§7Contaminated sessions: §f{self._stats.contaminated_sessions}")
+            sender.send_message(f"§7Rebuilt containers: §f{self._stats.rebuilt_containers}")
+            sender.send_message(f"§7Rebuild failures: §f{self._stats.rebuild_failures}")
+            sender.send_message(
+                f"§7Blocked direct inventory requests: §f{self._stats.blocked_direct_transactions}"
             )
             sender.send_message(
-                f"§7已阻止 144 内嵌库存请求: §f{self._stats.blocked_auth_input_requests}"
+                f"§7Blocked inventory requests embedded in packet 144: §f{self._stats.blocked_auth_input_requests}"
             )
             return True
 
         if sub == "perf":
             if len(args) > 1 and args[1].lower() == "reset":
                 self._perf.reset()
-                sender.send_message("§aAntiDupe 性能计数器已清零。")
+                sender.send_message("§aAntiDupe performance counters reset.")
                 return True
             self._send_perf_status(sender)
             return True
@@ -513,27 +616,95 @@ class AntiDupe(Plugin):
         if sub == "reload":
             self._settings = self._load_settings_with_log()
             self._perf_enabled = self._settings.perf_counters
+            self._configure_transfer_guard()
             self._candidates.clear()
             self._sessions.clear()
-            self._players.clear()
             self._report_state.clear()
             self._quarantined_blocks.clear()
             self._pending_rebuilds.clear()
             self._perf.reset()
-            try:
-                for player in self.server.online_players:
+            online_keys = set()
+            for player in self.server.online_players:
+                key = int(player.runtime_id)
+                online_keys.add(key)
+                token = self._players.get(key)
+                if token is None or token.unique_id != player.unique_id:
                     self._register_player(player, reset_existing=True)
-            except Exception:
-                pass
-            sender.send_message("§aAntiDupe 配置已重载。")
+            for key in self._players.keys() - online_keys:
+                self._clear_player_all(key)
+            sender.send_message("§aAntiDupe configuration reloaded.")
             return True
 
-        sender.send_message("§c用法: /antidupe [status|reload|perf [reset]]")
+        sender.send_message("§cUsage: /antidupe [status|reload|perf [reset]]")
         return False
+
+    def _configure_transfer_guard(self) -> None:
+        protocol = self.server.protocol_version
+        self._transfer_guard_enabled = (
+            self._settings.enabled and self._settings.guard_dimension_transfer
+            and protocol == TRANSFER_PROTOCOL_VERSION
+        )
+        if protocol != TRANSFER_PROTOCOL_VERSION:
+            self.logger.warning(
+                f"[AntiDupe] Dimension transfer guard disabled: protocol {protocol} is unsupported; "
+                f"requires {TRANSFER_PROTOCOL_VERSION}. Container protection is unchanged."
+            )
+
+    def _transfer_is_current(self, key, token, record) -> bool:
+        return self._players.get(key) is token and self._transfers.get(key) is record
+
+    def _start_transfer(self, key: PlayerKey, payload: bytes) -> None:
+        token = self._players[key]
+        record = DimensionTransfer(target=change_dimension_target(payload))
+        self._transfers[key] = record
+        self._stats.transfers_started += 1
+        self.logger.info(f"[AntiDupe] Transfer {key}: started, target={record.target}.")
+        if record.target is None:
+            self._quarantine_transfer(key, token, record, "malformed destination")
+            return
+
+        def timeout() -> None:
+            if self._transfer_is_current(key, token, record):
+                self._quarantine_transfer(key, token, record, "completion timeout")
+
+        self.server.scheduler.run_task(
+            self, timeout, delay=math.ceil(self._settings.dimension_transfer_timeout_seconds * 20)
+        )
+
+    def _quarantine_transfer(self, key, token, record, reason: str) -> None:
+        if record.quarantined or not self._transfer_is_current(key, token, record):
+            return
+        record.quarantined = True
+        self._stats.transfers_quarantined += 1
+        self.logger.warning(f"[AntiDupe] Transfer {key}: quarantined ({reason}).")
+
+        def find_current_player():
+            if self._transfer_is_current(key, token, record):
+                for player in self.server.online_players:
+                    if int(player.runtime_id) == key and player.unique_id == token.unique_id:
+                        return player
+            return None
+
+        def check_disconnect() -> None:
+            if find_current_player() is not None:
+                self.logger.warning(f"[AntiDupe] Transfer {key}: still online after kick; quarantine retained.")
+
+        def kick() -> None:
+            player = find_current_player()
+            if player is None:
+                return
+            try:
+                player.kick(self._settings.dimension_transfer_kick_message)
+            except Exception as exc:
+                self.logger.warning(f"[AntiDupe] Transfer {key}: kick failed; quarantine retained: {exc}")
+            self.server.scheduler.run_task(self, check_disconnect, delay=1)
+
+        # Closures capture only connection/transfer records, never a Player.
+        self.server.scheduler.run_task(self, kick, delay=1)
 
     def _send_perf_status(self, sender: CommandSender) -> None:
         if not self._perf_enabled:
-            sender.send_message("§7AntiDupe 性能计数器当前关闭。设置 perf-counters = true 后 reload。")
+            sender.send_message("§7AntiDupe performance counters are disabled. Set perf-counters = true, then reload.")
             return
         p = self._perf
         sender.send_message("§6=== AntiDupe Perf ===")
@@ -809,6 +980,7 @@ class AntiDupe(Plugin):
 
     def _clear_player_all(self, key: PlayerKey) -> None:
         self._clear_session_state(key)
+        self._transfers.pop(key, None)
         self._players.pop(key, None)
         for report_key in [k for k in self._report_state if k[0] == key]:
             self._report_state.pop(report_key, None)
