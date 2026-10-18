@@ -333,7 +333,9 @@ def test_cancelled_dimension_send_still_arms_guard_through_dispatch():
     assert receive(plugin, player, 30).is_cancelled
 
 
-@pytest.mark.parametrize('packet_id,payload', [(46, b'\x05'), (47, b''), (49, b'\x05minecraft:bundle')])
+@pytest.mark.parametrize('packet_id,payload', [
+    (46, b'\x05'), (47, b''), (49, b'\x05minecraft:bundle'), (50, b'\x05minecraft:bundle'),
+])
 def test_cancelled_container_send_does_nothing_through_dispatch(packet_id, payload):
     plugin, player = make_plugin(), CountingPlayer()
     key = plugin._player_key(player)

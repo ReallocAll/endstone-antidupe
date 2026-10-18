@@ -89,10 +89,20 @@ class PacketEvent:
         self._packet_id = packet_id
         self._player = player
         self._payload = payload
+        self._is_cancelled = False
         self.packet_id_reads = 0
         self.player_reads = 0
         self.payload_reads = 0
-        self.is_cancelled = False
+        self.cancellation_reads = 0
+
+    @property
+    def is_cancelled(self):
+        self.cancellation_reads += 1
+        return self._is_cancelled
+
+    @is_cancelled.setter
+    def is_cancelled(self, value):
+        self._is_cancelled = value
 
     @property
     def packet_id(self):

@@ -1,5 +1,7 @@
 from uuid import UUID
 
+import pytest
+
 from endstone_antidupe.constants import (
     PACKET_CONTAINER_OPEN,
     PACKET_INVENTORY_CONTENT,
@@ -9,17 +11,22 @@ from endstone_antidupe.state import ContainerCandidate
 from .helpers import CountingPlayer, PacketEvent, auth_input_payload, make_plugin
 
 
-def test_irrelevant_outbound_packet_never_touches_player_or_payload():
-    plugin = make_plugin()
+@pytest.mark.parametrize('cancelled', [False, True])
+def test_irrelevant_outbound_packet_reads_only_packet_id(cancelled):
+    plugin = make_plugin(perf=True)
     player = CountingPlayer()
     event = PacketEvent(19, player=player, payload=b'x' * 200)  # MovePlayer-like traffic
+    event.is_cancelled = cancelled
     plugin.on_packet_send(event)
     assert event.packet_id_reads == 1
+    assert event.cancellation_reads == 0
     assert event.player_reads == 0
     assert event.payload_reads == 0
     assert player.runtime_reads == 0
     assert player.uuid_reads == 0
     assert player.inventory_reads == 0
+    assert plugin._perf.send_fast_returns == 1
+    assert plugin._perf.send_relevant == 0
 
 
 def test_irrelevant_inbound_packet_never_touches_player_or_payload():

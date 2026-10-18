@@ -252,8 +252,8 @@ class AntiDupe(Plugin):
             return
 
         # CRITICAL HOT PATH: packet_id must be the first native property read.
-        # Do not touch event.player, event.payload, UUID, inventory, or world state
-        # until this filter has accepted the packet.
+        # Do not touch cancellation state, player, payload, UUID, inventory, or
+        # world state until a packet filter has accepted the packet.
         packet_id = event.packet_id
         if self._perf_enabled:
             perf = self._perf
@@ -278,12 +278,15 @@ class AntiDupe(Plugin):
                     self._start_transfer(key, event.payload)
             return
 
-        if not self._settings.enabled or event.is_cancelled:
+        if not self._settings.enabled:
             return
 
         if packet_id not in SEND_RELEVANT_PACKET_IDS:
             if self._perf_enabled:
                 self._perf.send_fast_returns += 1
+            return
+
+        if event.is_cancelled:
             return
 
         if self._perf_enabled:
