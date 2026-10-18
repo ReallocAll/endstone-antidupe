@@ -34,6 +34,27 @@ def complete(plugin, player, target=1):
         player=player, to_dimension=SimpleNamespace(type=SimpleNamespace(value=target))))
 
 
+@pytest.mark.parametrize('target', [0, 1, 2])
+@pytest.mark.parametrize('log_attempts', [False, True])
+def test_normal_transfer_and_routine_guard_drops_are_silent(target, log_attempts):
+    plugin = make_plugin(settings=Settings(log_attempts=log_attempts))
+    player = CountingPlayer(name='Alex')
+    start(plugin, player, target)
+    timeout = plugin.server.scheduler.tasks.pop()
+    for _ in range(5):
+        assert receive(plugin, player, 30).is_cancelled
+    complete(plugin, player, target)
+    assert plugin.server.scheduler.run_next() == 1
+    timeout[0]()
+    assert not plugin._transfers
+    assert not receive(plugin, player, 30).is_cancelled
+    assert plugin._stats.transfers_started == plugin._stats.transfers_completed == 1
+    assert plugin._stats.transfers_quarantined == 0
+    assert plugin._stats.transfer_packets_blocked == 5
+    assert player.name_reads == 1
+    assert not plugin.logger.messages
+
+
 @pytest.mark.parametrize('packet_id', [30, 147, 47, 999])
 def test_transfer_immediately_blocks_without_container(packet_id):
     plugin, player = make_plugin(), CountingPlayer()
@@ -102,23 +123,65 @@ def test_new_transfer_invalidates_old_release_and_timeout():
     assert not plugin._transfers[1].quarantined
 
 
-def test_timeout_quarantines_then_defers_kick_and_retains_until_quit():
-    plugin, player = make_plugin(), CountingPlayer()
+@pytest.mark.parametrize('target,destination', [
+    (0, 'Overworld'), (1, 'Nether'), (2, 'The End'), (-1, 'unknown dimension (ID -1)'),
+])
+def test_timeout_quarantines_then_defers_kick_and_retains_until_quit(target, destination):
+    plugin, player = make_plugin(), CountingPlayer(name="Alex\n'Builder")
     plugin.server.online_players = [player]
-    start(plugin, player)
+    start(plugin, player, target)
     assert plugin.server.scheduler.run_next() == 200
+    assert len(plugin.logger.messages) == 1
+    level, message = plugin.logger.messages[0]
+    assert level == 'warning'
+    assert repr("Alex\n'Builder") in message and destination in message
+    assert 'did not complete' in message and 'timeout' in message
+    assert 'quarantined' in message and 'kick scheduled' in message
+    assert 'target=' not in message and '\n' not in message
     assert not player.kicks
     event = receive(plugin, player, 999)
     assert event.is_cancelled and event.payload_reads == 0
     assert receive(plugin, player, 144, auth_input_2193()).is_cancelled
-    complete(plugin, player)
+    complete(plugin, player, target)
     assert plugin.server.scheduler.run_next() == 1
     assert len(player.kicks) == 1
     plugin.server.scheduler.run_next()
-    assert any('still online' in msg for _, msg in plugin.logger.messages)
+    assert len(plugin.logger.messages) == 2
+    level, message = plugin.logger.messages[-1]
+    assert level == 'warning'
+    assert repr("Alex\n'Builder") in message and destination in message
+    assert 'still online after kick' in message and 'quarantine retained' in message
     assert receive(plugin, player, 30).is_cancelled
+    assert len(plugin.logger.messages) == 2
+    assert not plugin.server.scheduler.tasks
+    assert player.name_reads == 1
     plugin.on_player_quit(SimpleNamespace(player=player))
     assert not plugin._transfers and not plugin._players
+
+
+def test_kick_failure_warning_identifies_player_destination_and_retained_protection():
+    plugin, player = make_plugin(), CountingPlayer(name='Alex')
+    plugin.server.online_players = [player]
+
+    def failed_kick(message):
+        raise RuntimeError('disconnect unavailable')
+
+    player.kick = failed_kick
+    start(plugin, player)
+    plugin.server.scheduler.run_next()
+    plugin.server.scheduler.run_next()
+    assert len(plugin.logger.messages) == 2
+    level, message = plugin.logger.messages[-1]
+    assert level == 'warning'
+    assert "'Alex'" in message and 'Nether' in message
+    assert 'kick failed' in message and 'disconnect unavailable' in message
+    assert 'quarantine retained' in message
+    plugin.server.scheduler.run_next()
+    for _ in range(5):
+        assert receive(plugin, player, 30).is_cancelled
+    assert len(plugin.logger.messages) == 3
+    assert not plugin.server.scheduler.tasks
+    assert player.name_reads == 1
 
 
 @pytest.mark.parametrize('quarantined', [False, True])
@@ -201,21 +264,34 @@ def test_quarantined_kick_cannot_be_cancelled_but_unrelated_kicks_unchanged():
                                      b'\x02' + bytes(12) + b'\x02\x00',
                                      b'\x02' + bytes(13) + b'\x01'])
 def test_malformed_start_quarantines(payload):
-    plugin, player = make_plugin(), CountingPlayer()
+    plugin, player = make_plugin(), CountingPlayer(name='Alex')
     start(plugin, player, payload=payload)
     assert receive(plugin, player, 144, auth_input_2193()).is_cancelled
+    assert len(plugin.logger.messages) == 1
+    level, message = plugin.logger.messages[0]
+    assert level == 'warning'
+    assert "'Alex'" in message and 'unknown destination' in message
+    assert 'malformed ChangeDimension' in message
+    assert 'quarantined' in message and 'kick scheduled' in message
+    assert player.name_reads == 1
 
 
 @pytest.mark.parametrize('protocol,enabled', [(2193, True), (2168, False)])
 def test_enable_existing_online_requires_fresh_connection(protocol, enabled):
-    plugin, player = make_plugin(), CountingPlayer()
+    plugin, player = make_plugin(), CountingPlayer(name='Alex')
     plugin.server.protocol_version = protocol
     plugin.server.online_players = [player]
     plugin.register_events = lambda _: None
     plugin._load_settings_with_log = lambda: Settings()
     plugin.on_enable()
     assert receive(plugin, player, 30).is_cancelled is enabled
-    if not enabled:
+    if enabled:
+        warnings = [msg for level, msg in plugin.logger.messages if level == 'warning']
+        assert len(warnings) == 1
+        assert "'Alex'" in warnings[0] and 'unknown destination' in warnings[0]
+        assert 'already connected' in warnings[0] and 'cannot be verified' in warnings[0]
+        assert 'quarantined' in warnings[0] and 'kick scheduled' in warnings[0]
+    else:
         start(plugin, player)
         assert not plugin._transfers
         assert any('2193' in msg and '2168' in msg for _, msg in plugin.logger.messages)
@@ -263,12 +339,12 @@ def test_fresh_join_does_not_arm_and_quarantine_cannot_be_replaced_by_new_start(
     assert len(plugin.server.scheduler.tasks) == queued
 
 
-def test_deferred_kick_requires_cached_uuid_and_logs_only_first_block():
+def test_deferred_kick_requires_cached_uuid_and_guard_drops_are_silent():
     plugin, player = make_plugin(), CountingPlayer()
     start(plugin, player)
     for _ in range(5):
         receive(plugin, player, 30)
-    assert sum('first blocked' in msg for _, msg in plugin.logger.messages) == 1
+    assert not plugin.logger.messages
     assert plugin._stats.transfer_packets_blocked == 5
     plugin.server.scheduler.run_next()
     impostor = CountingPlayer(runtime_id=1, unique_id=CountingPlayer(2)._unique_id)

@@ -51,7 +51,6 @@ class DimensionTransfer:
 
     target: int | None
     quarantined: bool = False
-    blocked_count: int = 0
 
 
 @dataclass(slots=True)

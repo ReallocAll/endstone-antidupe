@@ -107,7 +107,11 @@ class AntiDupe(Plugin):
             if self._transfer_guard_enabled:
                 record = DimensionTransfer(target=None)
                 self._transfers[key] = record
-                self._quarantine_transfer(key, self._players[key], record, "enabled mid-connection")
+                self._quarantine_transfer(
+                    key, self._players[key], record,
+                    "protection was enabled while the player was already connected; "
+                    "prior dimension transfers cannot be verified",
+                )
 
         state = "ON" if self._settings.enabled else "OFF"
         auth_guard = "ON" if self._settings.guard_player_auth_input else "OFF"
@@ -435,9 +439,6 @@ class AntiDupe(Plugin):
                     if not allowed:
                         event.is_cancelled = True
                         self._stats.transfer_packets_blocked += 1
-                        record.blocked_count += 1
-                        if record.blocked_count == 1:
-                            self.logger.warning(f"[AntiDupe] Transfer {key}: first blocked packet {packet_id}.")
                     return
 
         if not self._settings.enabled:
@@ -545,7 +546,6 @@ class AntiDupe(Plugin):
             if self._transfer_is_current(key, token, record) and not record.quarantined:
                 self._transfers.pop(key)
                 self._stats.transfers_completed += 1
-                self.logger.info(f"[AntiDupe] Transfer {key}: completed.")
 
         self.server.scheduler.run_task(self, release, delay=1)
 
@@ -661,14 +661,17 @@ class AntiDupe(Plugin):
         record = DimensionTransfer(target=change_dimension_target(payload))
         self._transfers[key] = record
         self._stats.transfers_started += 1
-        self.logger.info(f"[AntiDupe] Transfer {key}: started, target={record.target}.")
         if record.target is None:
-            self._quarantine_transfer(key, token, record, "malformed destination")
+            self._quarantine_transfer(
+                key, token, record, "the server sent a malformed ChangeDimension packet",
+            )
             return
 
         def timeout() -> None:
             if self._transfer_is_current(key, token, record):
-                self._quarantine_transfer(key, token, record, "completion timeout")
+                self._quarantine_transfer(
+                    key, token, record, "the dimension transfer did not complete before the configured timeout",
+                )
 
         self.server.scheduler.run_task(
             self, timeout, delay=math.ceil(self._settings.dimension_transfer_timeout_seconds * 20)
@@ -679,7 +682,11 @@ class AntiDupe(Plugin):
             return
         record.quarantined = True
         self._stats.transfers_quarantined += 1
-        self.logger.warning(f"[AntiDupe] Transfer {key}: quarantined ({reason}).")
+        destination = "unknown destination" if record.target is None else {
+            0: "Overworld", 1: "Nether", 2: "The End",
+        }.get(record.target, f"unknown dimension (ID {record.target})")
+        context = f"[AntiDupe] Dimension transfer for player {token.name!r} to {destination}"
+        self.logger.warning(f"{context}: {reason}; connection quarantined and kick scheduled for the next tick.")
 
         def find_current_player():
             if self._transfer_is_current(key, token, record):
@@ -690,7 +697,7 @@ class AntiDupe(Plugin):
 
         def check_disconnect() -> None:
             if find_current_player() is not None:
-                self.logger.warning(f"[AntiDupe] Transfer {key}: still online after kick; quarantine retained.")
+                self.logger.warning(f"{context}: still online after kick; quarantine retained.")
 
         def kick() -> None:
             player = find_current_player()
@@ -699,7 +706,7 @@ class AntiDupe(Plugin):
             try:
                 player.kick(self._settings.dimension_transfer_kick_message)
             except Exception as exc:
-                self.logger.warning(f"[AntiDupe] Transfer {key}: kick failed; quarantine retained: {exc}")
+                self.logger.warning(f"{context}: kick failed; quarantine retained: {exc}")
             self.server.scheduler.run_task(self, check_disconnect, delay=1)
 
         # Closures capture only connection/transfer records, never a Player.
