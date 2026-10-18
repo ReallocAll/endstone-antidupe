@@ -117,7 +117,7 @@ class AntiDupe(Plugin):
         auth_guard = "ON" if self._settings.guard_player_auth_input else "OFF"
         rebuild_guard = "ON" if self._settings.rebuild_on_contamination else "OFF"
         self.logger.info(
-            f"antidupe 0.2.4 enabled: Bundle/container guard is {state}; "
+            f"antidupe 0.2.5 enabled: Bundle/container guard is {state}; "
             f"PlayerAuthInput guard={auth_guard}; rebuild fail-safe={rebuild_guard}; "
             f"perf counters={'ON' if self._perf_enabled else 'OFF'}."
         )
@@ -566,7 +566,7 @@ class AntiDupe(Plugin):
 
     def on_command(self, sender: CommandSender, command: Command, args: list[str]) -> bool:
         if not args:
-            sender.send_message("§6antidupe §f0.2.4")
+            sender.send_message("§6antidupe §f0.2.5")
             sender.send_message("§e/antidupe status §7- View protection status")
             sender.send_message("§e/antidupe reload §7- Reload configuration")
             sender.send_message("§e/antidupe perf §7- View performance counters")

@@ -4,7 +4,7 @@
 
 AntiDupe 是 Endstone 插件，用于限制基岩版中与收纳袋及容器有关的部分物品复制路径。它会拦截高风险容器附近的可疑库存请求，隔离受污染的玩家会话，并可通过破坏性重建漏斗进行兜底处理。
 
-**版本：** 0.2.4
+**版本：** 0.2.5
 
 **要求：** Python >=3.11；插件声明使用 Endstone API 0.11。CI 兼容性矩阵面向 CPython 3.11–3.15。
 
@@ -23,7 +23,7 @@ AntiDupe 是 Endstone 插件，用于限制基岩版中与收纳袋及容器有�
 
 ## 安装与升级
 
-下载发布版 wheel，或自行构建，将 `endstone_antidupe-0.2.4-py3-none-any.whl` 放入服务端的 `plugins/` 目录，移除旧版 AntiDupe wheel，然后完整重启 BDS。Endstone 从该目录加载插件 wheel。更新 Python wheel 时不要使用 `/reload`。
+下载发布版 wheel，或自行构建，将 `endstone_antidupe-0.2.5-py3-none-any.whl` 放入服务端的 `plugins/` 目录，移除旧版 AntiDupe wheel，然后完整重启 BDS。Endstone 从该目录加载插件 wheel。更新 Python wheel 时不要使用 `/reload`。
 
 ## 维度切换防护
 

@@ -14,7 +14,7 @@ DEFAULT_DIMENSION_TRANSFER_KICK_MESSAGE = (
     "[AntiDupe] Dimension transfer did not complete safely. Please reconnect."
 )
 
-DEFAULT_CONFIG = '''# antidupe 0.2.4
+DEFAULT_CONFIG = '''# antidupe 0.2.5
 # Bundle / high-risk-container protection.
 
 enabled = true
