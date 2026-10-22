@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "endstone-antidupe"
-version = "0.2.5"
+version = "0.2.6"
 description = "Bundle and high-risk container anti-dupe protection for Endstone"
 readme = "README.md"
 license = "GPL-3.0-only"
