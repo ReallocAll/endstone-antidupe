@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from .constants import (
-    INPUT_PERFORM_ITEM_STACK_REQUEST,
     PACKET_INVENTORY_CONTENT,
     PACKET_INVENTORY_SLOT,
     TRANSFER_MUTATION_FLAGS,
     TRANSFER_PLAYER_ACTIONS,
 )
 
-PLAYER_AUTH_INPUT_FLAGS_OFFSET = 32
-_VARINT128_MAX_BYTES = 19
 _VARUINT32_MAX_BYTES = 5
 
 
@@ -103,7 +100,7 @@ def transfer_player_action_allowed(payload: bytes) -> bool:
 def transfer_auth_input_allowed(payload: bytes) -> bool:
     """Prove all three independent mutation optionals absent in protocol 2193.
 
-    The flags are an enum list, not the legacy container parser's bitset.
+    The flags are an enum list, not a legacy bitset.
     Movement, including zero displacement, is never evidence of completion.
     """
     try:
@@ -159,22 +156,6 @@ def _read_varuint(data: bytes, offset: int, max_bytes: int) -> tuple[int, int] |
 
 def _read_int8(value: int) -> int:
     return value - 256 if value >= 128 else value
-
-
-def player_auth_input_flags(payload: bytes) -> int | None:
-    if len(payload) <= PLAYER_AUTH_INPUT_FLAGS_OFFSET:
-        return None
-    parsed = _read_varuint(payload, PLAYER_AUTH_INPUT_FLAGS_OFFSET, _VARINT128_MAX_BYTES)
-    if parsed is None:
-        return None
-    return parsed[0]
-
-
-def player_auth_input_has_stack_request(payload: bytes) -> bool:
-    flags = player_auth_input_flags(payload)
-    if flags is None:
-        return False
-    return bool(flags & (1 << INPUT_PERFORM_ITEM_STACK_REQUEST))
 
 
 def container_open_id(payload: bytes) -> int | None:

@@ -96,18 +96,17 @@ def test_inventory_sync_for_other_container_does_not_contaminate_target():
     assert not plugin._quarantined_blocks
 
 
-def test_exact_container_bundle_marks_contamination_and_schedules_rebuild_path():
+def test_correlated_marker_quarantines_uncertainty_without_destructive_authority():
     plugin = make_plugin()
     player = CountingPlayer(runtime_id=1)
     key = plugin._player_key(player)
     plugin._sessions[key] = safe_session(container_id=5)
-    called = []
-    plugin._quarantine_and_schedule_rebuild = lambda p, k, s: called.append((k, s.target_type))
     event = PacketEvent(PACKET_INVENTORY_CONTENT, player=player, payload=b'\x05minecraft:bundle')
     plugin.on_packet_send(event)
-    assert plugin._sessions[key].contaminated
-    assert plugin._stats.contaminated_sessions == 1
-    assert called == [(key, 'minecraft:hopper')]
+    assert plugin._sessions[key].inventory_unverified
+    assert not plugin._sessions[key].contaminated
+    assert plugin._stats.contaminated_sessions == 0
+    assert plugin.server.scheduler.tasks == []
 
 
 def test_reconnect_runtime_id_reuse_clears_old_session():
@@ -138,10 +137,9 @@ def test_multi_player_state_isolation():
     plugin._sessions[kb].x = 20
 
     event = PacketEvent(PACKET_INVENTORY_CONTENT, player=a, payload=b'\x05minecraft:bundle')
-    plugin._quarantine_and_schedule_rebuild = lambda p, k, s: None
     plugin.on_packet_send(event)
 
-    assert plugin._sessions[ka].contaminated
+    assert plugin._sessions[ka].inventory_unverified
     assert not plugin._sessions[kb].contaminated
 
 

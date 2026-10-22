@@ -40,13 +40,11 @@ from .protocol import (
     change_dimension_target,
     container_open_id,
     inventory_sync_container_id,
-    player_auth_input_has_stack_request,
     transfer_auth_input_allowed,
     transfer_loading_screen_allowed,
     transfer_player_action_allowed,
     transfer_terrain_packet_allowed,
 )
-from .rebuild import rebuild_block
 from .state import (
     ContainerCandidate,
     ContainerSession,
@@ -115,7 +113,7 @@ class AntiDupe(Plugin):
 
         state = "ON" if self._settings.enabled else "OFF"
         auth_guard = "ON" if self._settings.guard_player_auth_input else "OFF"
-        rebuild_guard = "ON" if self._settings.rebuild_on_contamination else "OFF"
+        rebuild_guard = "UNAVAILABLE (unverified item/block identity)"
         self.logger.info(
             f"antidupe 0.2.5 enabled: Bundle/container guard is {state}; "
             f"PlayerAuthInput guard={auth_guard}; rebuild fail-safe={rebuild_guard}; "
@@ -320,6 +318,14 @@ class AntiDupe(Plugin):
         key = self._player_key(player)
 
         if packet_id == PACKET_CONTAINER_CLOSE:
+            session = self._sessions.get(key)
+            if session is not None:
+                try:
+                    close_id = container_open_id(event.payload)
+                except Exception:
+                    return
+                if close_id is None or close_id != session.container_id:
+                    return
             self._clear_session_state(key)
             return
 
@@ -336,6 +342,7 @@ class AntiDupe(Plugin):
                 window_id = container_open_id(event.payload)
             except Exception:
                 window_id = None
+            self._clear_session_state(key)
             self._sessions[key] = ContainerSession(
                 kind=candidate.kind,
                 target_type=candidate.target_type,
@@ -369,21 +376,20 @@ class AntiDupe(Plugin):
 
         session.last_activity = time.monotonic()
 
-        # Minecraft identifiers are lowercase. Avoid payload.lower(), which used
-        # to allocate/copy the entire packet on every relevant inventory sync.
+        # A byte marker can occur in ordinary item metadata. It is only a
+        # suspicion signal, never typed Bundle evidence or authority to destroy
+        # inventory. Protocol 2193 uses numeric item IDs; we have no verified
+        # runtime-ID mapping or container inventory API here.
         if b"bundle" not in payload:
             return
 
-        first_contamination = not session.contaminated
-        if first_contamination:
-            session.contaminated = True
-            self._stats.contaminated_sessions += 1
+        session.inventory_unverified = True
 
         if not session.contamination_alerted:
             session.contamination_alerted = True
             self._report(
                 player,
-                "container-has-bundle",
+                "container-item-identity-unverified",
                 session.target_type,
                 session.x,
                 session.y,
@@ -392,8 +398,9 @@ class AntiDupe(Plugin):
                 player_key=key,
             )
 
-        if first_contamination and session.kind == "block":
-            self._quarantine_and_schedule_rebuild(player, key, session)
+        block_key = self._session_block_key(session)
+        if block_key is not None:
+            self._quarantined_blocks.add(block_key)
 
     @event_handler(ignore_cancelled=True)
     def on_packet_receive(self, event: PacketReceiveEvent) -> None:
@@ -469,7 +476,8 @@ class AntiDupe(Plugin):
         key = self._player_key(player)
 
         if packet_id == PACKET_CONTAINER_CLOSE:
-            self._clear_session_state(key)
+            # Client intent is not proof that the native window closed. Wait
+            # for the matching server close or a connection/dimension event.
             return
 
         session = self._sessions.get(key)
@@ -482,10 +490,14 @@ class AntiDupe(Plugin):
             if self._perf_enabled:
                 self._perf.payload_reads += 1
             try:
-                if not player_auth_input_has_stack_request(event.payload):
+                # Use the same revision-qualified inspector as transfer guard.
+                # Unsupported revisions and malformed frames cannot prove that
+                # the three independent mutation optionals are absent.
+                if (self.server.protocol_version == TRANSFER_PROTOCOL_VERSION
+                        and transfer_auth_input_allowed(event.payload)):
                     return
             except Exception:
-                return
+                pass
 
             if not self._session_is_unsafe(player, session):
                 return
@@ -621,9 +633,9 @@ class AntiDupe(Plugin):
             self._perf_enabled = self._settings.perf_counters
             self._configure_transfer_guard()
             self._candidates.clear()
-            self._sessions.clear()
+            # A config reload is not evidence that a native window closed or
+            # that a quarantined block's contents were repaired.
             self._report_state.clear()
-            self._quarantined_blocks.clear()
             self._pending_rebuilds.clear()
             self._perf.reset()
             online_keys = set()
@@ -745,132 +757,13 @@ class AntiDupe(Plugin):
         sender.send_message(f"§7send top IDs: §f{top_send}")
         sender.send_message(f"§7recv top IDs: §f{top_recv}")
 
-    def _quarantine_and_schedule_rebuild(
-        self, player: Any, player_key: PlayerKey, session: ContainerSession
-    ) -> None:
-        block_key = self._session_block_key(session)
-        if block_key is None:
-            return
-
-        # Quarantine is immediate; rebuild happens a tick later. Any other
-        # viewer/session touching the same block becomes unsafe during the gap.
-        self._quarantined_blocks.add(block_key)
-
-        if not self._settings.rebuild_on_contamination:
-            return
-        if session.target_type not in self._settings.rebuild_container_types:
-            return
-        if block_key in self._pending_rebuilds:
-            return
-
-        dimension = self._find_dimension(session.dimension)
-        if dimension is None:
-            self._stats.rebuild_failures += 1
-            self.logger.error(
-                f"[AntiDupe] Cannot rebuild {session.target_type} at "
-                f"({session.x}, {session.y}, {session.z}): dimension {session.dimension!r} not found."
-            )
-            return
-
-        if self._perf_enabled:
-            self._perf.world_block_queries += 1
-        block = dimension.get_block_at(session.x, session.y, session.z)
-        current_type = str(block.type).lower()
-        if current_type != session.target_type:
-            self._quarantined_blocks.discard(block_key)
-            return
-
-        try:
-            saved_data = block.data
-        except Exception as exc:
-            self._stats.rebuild_failures += 1
-            self.logger.error(
-                f"[AntiDupe] Failed to snapshot {session.target_type} at "
-                f"({session.x}, {session.y}, {session.z}); keeping it quarantined: {exc}"
-            )
-            return
-
-        self._pending_rebuilds.add(block_key)
-        self._report(
-            player,
-            "rebuild-scheduled",
-            session.target_type,
-            session.x,
-            session.y,
-            session.z,
-            notify_player=False,
-            player_key=player_key,
-        )
-
-        expected_type = session.target_type
-        dimension_name = session.dimension
-        x, y, z = session.x, session.y, session.z
-
-        def task() -> None:
-            self._perform_rebuild(
-                block_key, dimension_name, x, y, z, expected_type, saved_data
-            )
-
-        self.server.scheduler.run_task(
-            self,
-            task,
-            delay=self._settings.rebuild_delay_ticks,
-        )
-
-    def _perform_rebuild(
-        self,
-        block_key: BlockKey,
-        dimension_name: str,
-        x: int,
-        y: int,
-        z: int,
-        expected_type: str,
-        saved_data: Any,
-    ) -> None:
-        try:
-            dimension = self._find_dimension(dimension_name)
-            if dimension is None:
-                raise RuntimeError(f"dimension {dimension_name!r} not found")
-
-            if self._perf_enabled:
-                # rebuild_block performs get_block_at three times.
-                self._perf.world_block_queries += 3
-            result = rebuild_block(dimension, x, y, z, expected_type, saved_data)
-            if result.status == "changed":
-                self.logger.warning(
-                    f"[AntiDupe] Rebuild skipped at ({x}, {y}, {z}): "
-                    f"target changed from {expected_type} to {result.before_type}."
-                )
-                self._quarantined_blocks.discard(block_key)
-                return
-            if result.status != "rebuilt":
-                raise RuntimeError(
-                    f"restored block type mismatch: expected {expected_type}, got {result.after_type}"
-                )
-
-            self._stats.rebuilt_containers += 1
-            self.logger.warning(
-                f"§c[AntiDupe] rebuilt contaminated {expected_type} at ({x}, {y}, {z}); "
-                "original BlockData restored."
-            )
-            self._clear_sessions_for_block(block_key)
-            self._quarantined_blocks.discard(block_key)
-        except Exception as exc:
-            # Fail closed: if rebuilding failed after contamination, leave the
-            # location globally quarantined until an admin fixes it or reloads.
-            self._stats.rebuild_failures += 1
-            self.logger.error(
-                f"[AntiDupe] Failed to rebuild contaminated {expected_type} at "
-                f"({x}, {y}, {z}); location remains quarantined: {exc}"
-            )
-        finally:
-            self._pending_rebuilds.discard(block_key)
-
     def _session_is_unsafe(self, player: Any, session: ContainerSession) -> bool:
         if self._perf_enabled:
             self._perf.deep_checks += 1
         block_key = self._session_block_key(session)
         if block_key is not None and block_key in self._quarantined_blocks:
+            return True
+        if session.inventory_unverified:
             return True
         if self._settings.quarantine_contaminated_session and session.contaminated:
             return True
@@ -971,11 +864,21 @@ class AntiDupe(Plugin):
             self.logger.warning(
                 f"Failed to inspect inventory for {getattr(player, 'name', '?')}: {exc}"
             )
+            return True  # Unknown inventory must not open the mutation gate.
         return False
 
     def _clear_session_state(self, key: PlayerKey) -> None:
         self._candidates.pop(key, None)
-        self._sessions.pop(key, None)
+        old = self._sessions.pop(key, None)
+        if old is not None:
+            block_key = self._session_block_key(old)
+            if block_key is not None and not any(
+                self._session_block_key(session) == block_key
+                for session in self._sessions.values()
+            ):
+                # Suspicion belongs to these open windows, not to every future
+                # block at this coordinate. A later open is inspected anew.
+                self._quarantined_blocks.discard(block_key)
 
     def _clear_sessions_for_block(self, block_key: BlockKey) -> None:
         for player_key, session in list(self._sessions.items()):
@@ -1001,9 +904,8 @@ class AntiDupe(Plugin):
             if now - candidate.created_at > self._settings.candidate_timeout_seconds:
                 self._candidates.pop(key, None)
 
-        for key, session in list(self._sessions.items()):
-            if now - session.last_activity > self._settings.session_timeout_seconds:
-                self._clear_session_state(key)
+        # Established windows live until close/quit/dimension transition.
+        # Idle time bounds candidates, not the lifetime of a native window.
 
         stale = max(self._settings.alert_cooldown_seconds * 4.0, 15.0)
         for report_key, (last, _suppressed) in list(self._report_state.items()):

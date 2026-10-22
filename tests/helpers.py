@@ -171,5 +171,4 @@ def encode_varuint(value: int) -> bytes:
 
 
 def auth_input_payload(*, stack_request: bool) -> bytes:
-    flags = (1 << 36) if stack_request else 0
-    return b'\x00' * 32 + encode_varuint(flags)
+    return auth_input_2193([36] if stack_request else [])

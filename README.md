@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-AntiDupe is an Endstone plugin that limits Bedrock Edition Bundle/container duplication vectors. It blocks suspicious inventory requests around selected high-risk containers, quarantines contaminated sessions, and can rebuild contaminated hoppers as a destructive fallback.
+AntiDupe is an Endstone plugin that limits Bedrock Edition Bundle/container duplication vectors. It blocks suspicious inventory requests around selected high-risk containers, quarantines suspicious sessions without destroying container inventories.
 
 **Version:** 0.2.5
 
@@ -14,8 +14,8 @@ AntiDupe is an Endstone plugin that limits Bedrock Edition Bundle/container dupl
 
 - Blocks opening high-risk containers while carrying a Bundle (configurable).
 - Checks inventory transaction packets (30, 147) and relevant requests embedded in PlayerAuthInput (144).
-- Correlates ContainerOpen (46) with InventoryContent/InventorySlot (49, 50) by container ID to detect contamination.
-- Quarantines contaminated sessions; optionally rebuilds affected hoppers while preserving block states, including facing.
+- Correlates ContainerOpen (46) with InventoryContent/InventorySlot (49, 50) by container ID to correlate suspicion.
+- Quarantines suspicious windows without automatically replacing blocks. Item metadata text is not typed Bundle identity.
 - Keeps irrelevant packet callbacks inexpensive; optional performance counters are disabled by default.
 - On protocol **2193**, immediately guards an outbound ChangeDimension (61) until the matching server dimension-completion event and one subsequent scheduler tick. Standalone inventory packets (30, 147) are blocked even without a container session.
 
@@ -35,7 +35,7 @@ Normal dimension transfers and routine guard packet drops are silent. Exceptiona
 
 Completion release relies on the server's dimension-change AFTER event finishing synchronous native cleanup before the next scheduler heartbeat. This is bounded containment, not a repair of the native server bug or universal save-state introspection. Same-dimension respawn and independent server-generated item drops are **not proven covered**.
 
-`/antidupe reload` preserves active transfers and quarantines for the same online connections, even when new protection is disabled in configuration. Container cleanup cannot release them. Enabling the plugin with already-online players on a supported protocol quarantines and schedules kicks for those sessions to obtain fresh known joins; a full server restart is preferred. Protection cannot be guaranteed while the plugin is disabled. Unsupported protocols disable only the new transfer guard and emit a warning; existing container protection keeps its prior behavior.
+`/antidupe reload` preserves active transfers and quarantines for the same online connections, even when new protection is disabled in configuration. Container cleanup cannot release them. Enabling the plugin with already-online players on a supported protocol quarantines and schedules kicks for those sessions to obtain fresh known joins; a full server restart is preferred. Protection cannot be guaranteed while the plugin is disabled. Unsupported protocols disable the new transfer guard and emit a warning; an unsafe container window conservatively rejects PlayerAuthInput because absence of mutations cannot be proven for that revision.
 
 ## Commands
 
@@ -72,7 +72,11 @@ candidate-timeout-seconds = 1.5
 perf-counters = false
 ```
 
-**Caution:** Rebuilding a contaminated container intentionally destroys its existing block-entity inventory. It should be used only when this trade-off is acceptable. Failed rebuilds remain quarantined (fail-closed).
+**Safety change:** Automatic destructive rebuilding is unavailable, even when the retained `rebuild-*` configuration keys are enabled. Endstone 0.11 supplies neither verified typed container contents nor block-entity generation identity here. A byte string such as `bundle` may be an ordinary custom name; it can only flag uncertainty, never authorize item destruction. No deferred rebuild jobs are created, so reload/replacement cannot leave an old destructive operation running.
+
+The typed player-inventory check remains in place; inventory-read failures fail closed. Container sync markers are only a bounded heuristic: false positives can quarantine renamed ordinary items, and the absence of a marker does not prove absence of a real Bundle. A version-qualified numeric item decoder with independently captured fixtures is still required for definitive container item evidence.
+
+An established window stays guarded across idle time and configuration reload. `session-timeout-seconds` is retained for config compatibility but no longer expires open windows. Client close intent alone cannot release protection: only a matching server close, quit, dimension transition, or server opening a replacement window releases that session. Location suspicion protects all current viewers and is removed after the last tracked viewer closes; a later open is inspected anew. It is not a persistent assertion about every future block at those coordinates. Administrators should close affected windows and inspect the actual container contents; reload is not a repair operation.
 
 The transfer timeout is clamped to 1–120 seconds and scheduled at 20 ticks per second. Status includes transfer start/completion/quarantine and blocked-packet counters. Existing configuration files are not rewritten; missing keys use defaults.
 

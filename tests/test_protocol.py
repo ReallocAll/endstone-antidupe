@@ -2,14 +2,14 @@ from endstone_antidupe.constants import PACKET_INVENTORY_CONTENT, PACKET_INVENTO
 from endstone_antidupe.protocol import (
     container_open_id,
     inventory_sync_container_id,
-    player_auth_input_has_stack_request,
+    transfer_auth_input_allowed,
 )
 from .helpers import auth_input_payload
 
 
 def test_player_auth_input_stack_request_flag():
-    assert not player_auth_input_has_stack_request(auth_input_payload(stack_request=False))
-    assert player_auth_input_has_stack_request(auth_input_payload(stack_request=True))
+    assert transfer_auth_input_allowed(auth_input_payload(stack_request=False))
+    assert not transfer_auth_input_allowed(auth_input_payload(stack_request=True))
 
 
 def test_container_ids():

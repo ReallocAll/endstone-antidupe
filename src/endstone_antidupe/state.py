@@ -26,6 +26,7 @@ class ContainerSession:
     opened_at: float
     last_activity: float
     container_id: int | None = None
+    inventory_unverified: bool = False
     contaminated: bool = False
     contamination_alerted: bool = False
     blocked_count: int = 0
