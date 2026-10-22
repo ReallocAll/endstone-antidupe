@@ -7,4 +7,4 @@
 - Rebuild is destructive. Only act on correlated container-ID contamination, retain the original block data, and avoid replacing a block already changed by another actor.
 - Use `uv sync --extra dev`, `uv run ruff check .`, `uv run pytest`, and `uv build --wheel`. Review wheel entry point `antidupe = endstone_antidupe:AntiDupe`.
 - Extend regression tests for session lifecycle, identity cache, reconnection/runtime-ID reuse, multiple players, packet filtering, and container rebuild before behavior changes.
-- Do not commit player/world data, secrets, server configs, build output, or virtual environments. Do not publish packages or releases from CI.
+- Do not commit player/world data, secrets, server configs, build output, or virtual environments. Publish GitHub Releases only through the authorized, version-validated release workflow after all CI checks pass. Never publish to PyPI.

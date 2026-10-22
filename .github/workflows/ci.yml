@@ -3,8 +3,18 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version to validate or release (must match pyproject.toml)
+        required: true
+        type: string
+      dry_run:
+        description: Validate without publishing
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -92,3 +102,94 @@ jobs:
 
           echo "Warning/error annotations: ${problems}"
           test "${problems}" -eq 0
+
+  release:
+    name: Publish validated GitHub Release
+    needs: [verify, audit-annotations]
+    if: >-
+      (github.event_name == 'push' && (github.ref_type == 'tag' ||
+      startsWith(github.event.head_commit.message, 'chore: release v'))) ||
+      (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: endstone-antidupe-py3.11
+          path: artifacts
+          merge-multiple: true
+      - name: Validate release identity and wheel
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        shell: python
+        run: |
+          import configparser
+          import email.parser
+          import os
+          from pathlib import Path
+          import subprocess
+          import tomllib
+          import zipfile
+          project = tomllib.loads(Path('pyproject.toml').read_text())['project']
+          version = project['version']
+          tag = 'v' + version
+          sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert sha == os.environ['GITHUB_SHA'], (sha, os.environ['GITHUB_SHA'])
+          if os.environ['GITHUB_EVENT_NAME'] == 'push':
+              if os.environ['GITHUB_REF_TYPE'] == 'tag':
+                  assert os.environ['GITHUB_REF_NAME'] == tag
+              else:
+                  assert os.environ['GITHUB_REF'] == 'refs/heads/main'
+                  subject = subprocess.check_output(['git', 'log', '-1', '--pretty=%s'], text=True).strip()
+                  assert subject == 'chore: release ' + tag, subject
+          else:
+              assert os.environ['GITHUB_REF'] == 'refs/heads/main'
+              assert os.environ['INPUT_VERSION'] == version
+          notes = Path('docs/releases') / (version + '.md')
+          assert notes.is_file() and notes.read_text().strip()
+          wheels = list(Path('artifacts').glob('*.whl'))
+          assert len(wheels) == 1, wheels
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              assert wheel.testzip() is None
+              names = wheel.namelist()
+              meta, = [n for n in names if n.endswith('.dist-info/METADATA')]
+              m = email.parser.Parser().parsestr(wheel.read(meta).decode())
+              assert m['Name'] == project['name']
+              assert m['Version'] == version
+              ep, = [n for n in names if n.endswith('.dist-info/entry_points.txt')]
+              config = configparser.ConfigParser()
+              config.read_string(wheel.read(ep).decode())
+              assert dict(config['endstone']) == project['entry-points']['endstone']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'tag={tag}\nversion={version}\n')
+      - name: Tag and publish tested artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists; refusing to overwrite assets" >&2
+            exit 1
+          fi
+          if git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$GITHUB_SHA"
+          else
+            git tag "$RELEASE_TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+          (cd artifacts && sha256sum *.whl > SHA256SUMS)
+          printf '\nSource commit: %s\nValidation run: https://github.com/%s/actions/runs/%s\n' \
+            "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "docs/releases/$RELEASE_VERSION.md"
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$RELEASE_TAG" --notes-file "docs/releases/$RELEASE_VERSION.md" \
+            artifacts/*.whl artifacts/SHA256SUMS
