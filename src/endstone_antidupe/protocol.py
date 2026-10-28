@@ -11,7 +11,7 @@ _VARUINT32_MAX_BYTES = 5
 
 
 def _strict_varuint(data: bytes, offset: int, bits: int) -> tuple[int, int]:
-    """Bounded, canonical integers for the protocol-2193 transfer guard only."""
+    """Bounded, canonical integers for the protocol-2193/2225 transfer guard only."""
     value = 0
     for shift in range(0, bits, 7):
         if offset >= len(data):
@@ -98,7 +98,7 @@ def transfer_player_action_allowed(payload: bytes) -> bool:
 
 
 def transfer_auth_input_allowed(payload: bytes) -> bool:
-    """Prove all three independent mutation optionals absent in protocol 2193.
+    """Prove all three independent mutation optionals absent in protocols 2193 and 2225.
 
     The flags are an enum list, not a legacy bitset.
     Movement, including zero displacement, is never evidence of completion.
@@ -171,7 +171,7 @@ def container_open_id(payload: bytes) -> int | None:
 def inventory_sync_container_id(packet_id: int, payload: bytes) -> int | None:
     """Return the target container id for InventoryContent/InventorySlot.
 
-    On protocol 2193 (Bedrock 1.26.50/1.26.51):
+    On protocols 2193 and 2225 (Bedrock 1.26.50/1.26.60):
       * InventoryContent(49): ContainerID is encoded as uvarint32.
       * InventorySlot(50): ContainerID is encoded as int8.
     """

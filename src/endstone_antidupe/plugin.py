@@ -32,7 +32,7 @@ from .constants import (
     RESTRICTED_ENTITY_CONTAINERS,
     SEND_RELEVANT_PACKET_IDS,
     TRANSFER_LIVENESS_PACKET_IDS,
-    TRANSFER_PROTOCOL_VERSION,
+    TRANSFER_PROTOCOL_VERSIONS,
     TRANSFER_TERRAIN_PACKET_IDS,
     is_bundle_type,
 )
@@ -115,7 +115,7 @@ class AntiDupe(Plugin):
         auth_guard = "ON" if self._settings.guard_player_auth_input else "OFF"
         rebuild_guard = "UNAVAILABLE (unverified item/block identity)"
         self.logger.info(
-            f"antidupe 0.2.5 enabled: Bundle/container guard is {state}; "
+            f"antidupe 0.2.7 enabled: Bundle/container guard is {state}; "
             f"PlayerAuthInput guard={auth_guard}; rebuild fail-safe={rebuild_guard}; "
             f"perf counters={'ON' if self._perf_enabled else 'OFF'}."
         )
@@ -493,7 +493,7 @@ class AntiDupe(Plugin):
                 # Use the same revision-qualified inspector as transfer guard.
                 # Unsupported revisions and malformed frames cannot prove that
                 # the three independent mutation optionals are absent.
-                if (self.server.protocol_version == TRANSFER_PROTOCOL_VERSION
+                if (self.server.protocol_version in TRANSFER_PROTOCOL_VERSIONS
                         and transfer_auth_input_allowed(event.payload)):
                     return
             except Exception:
@@ -578,7 +578,7 @@ class AntiDupe(Plugin):
 
     def on_command(self, sender: CommandSender, command: Command, args: list[str]) -> bool:
         if not args:
-            sender.send_message("§6antidupe §f0.2.5")
+            sender.send_message("§6antidupe §f0.2.7")
             sender.send_message("§e/antidupe status §7- View protection status")
             sender.send_message("§e/antidupe reload §7- Reload configuration")
             sender.send_message("§e/antidupe perf §7- View performance counters")
@@ -657,12 +657,12 @@ class AntiDupe(Plugin):
         protocol = self.server.protocol_version
         self._transfer_guard_enabled = (
             self._settings.enabled and self._settings.guard_dimension_transfer
-            and protocol == TRANSFER_PROTOCOL_VERSION
+            and protocol in TRANSFER_PROTOCOL_VERSIONS
         )
-        if protocol != TRANSFER_PROTOCOL_VERSION:
+        if protocol not in TRANSFER_PROTOCOL_VERSIONS:
             self.logger.warning(
                 f"[AntiDupe] Dimension transfer guard disabled: protocol {protocol} is unsupported; "
-                f"requires {TRANSFER_PROTOCOL_VERSION}. Container protection is unchanged."
+                f"requires one of {sorted(TRANSFER_PROTOCOL_VERSIONS)}. Container protection is unchanged."
             )
 
     def _transfer_is_current(self, key, token, record) -> bool:

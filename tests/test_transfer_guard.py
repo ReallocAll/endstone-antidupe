@@ -276,7 +276,7 @@ def test_malformed_start_quarantines(payload):
     assert player.name_reads == 1
 
 
-@pytest.mark.parametrize('protocol,enabled', [(2193, True), (2168, False)])
+@pytest.mark.parametrize('protocol,enabled', [(2193, True), (2225, True), (2168, False)])
 def test_enable_existing_online_requires_fresh_connection(protocol, enabled):
     plugin, player = make_plugin(), CountingPlayer(name='Alex')
     plugin.server.protocol_version = protocol
@@ -562,3 +562,46 @@ def test_login_cache_status_remains_denied_while_waiting():
     plugin, player = make_plugin(), CountingPlayer()
     start(plugin, player)
     assert receive(plugin, player, 129, b'\x01').is_cancelled
+
+
+@pytest.mark.parametrize('protocol', [2193, 2225])
+def test_supported_protocol_transfer_blocks_mutations_until_server_completion(protocol):
+    plugin, player = make_plugin(), CountingPlayer()
+    plugin.server.protocol_version = protocol
+    plugin._configure_transfer_guard()
+    assert plugin._transfer_guard_enabled
+    assert not plugin.logger.messages
+
+    start(plugin, player, target=2)
+    assert not receive(plugin, player, 144, auth_input_2193()).is_cancelled
+    assert receive(plugin, player, 144, auth_input_2193([36])).is_cancelled
+    assert receive(plugin, player, 30).is_cancelled
+    assert receive(plugin, player, 147).is_cancelled
+    complete(plugin, player, target=2)
+    assert receive(plugin, player, 30).is_cancelled
+    assert plugin.server.scheduler.run_next() == 1
+    assert not receive(plugin, player, 30).is_cancelled
+
+
+@pytest.mark.parametrize('protocol', [2168, 2226])
+def test_unsupported_protocol_still_disables_transfer_guard(protocol):
+    plugin, player = make_plugin(), CountingPlayer()
+    plugin.server.protocol_version = protocol
+    plugin._configure_transfer_guard()
+    assert not plugin._transfer_guard_enabled
+    assert len(plugin.logger.messages) == 1
+    assert 'unsupported' in plugin.logger.messages[0][1]
+    start(plugin, player)
+    assert not plugin._transfers
+    assert not receive(plugin, player, 30).is_cancelled
+
+
+@pytest.mark.parametrize('protocol', [2193, 2225])
+def test_supported_protocol_container_auth_input_stays_selective(protocol):
+    from .helpers import FakeItem
+    plugin, player = make_plugin(), CountingPlayer(inventory=[FakeItem('minecraft:bundle')])
+    plugin.server.protocol_version = protocol
+    plugin._configure_transfer_guard()
+    plugin._sessions[plugin._player_key(player)] = safe_session()
+    assert not receive(plugin, player, 144, auth_input_2193()).is_cancelled
+    assert receive(plugin, player, 144, auth_input_2193([36])).is_cancelled

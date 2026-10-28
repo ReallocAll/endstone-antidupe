@@ -4,7 +4,7 @@
 
 AntiDupe is an Endstone plugin that limits Bedrock Edition Bundle/container duplication vectors. It blocks suspicious inventory requests around selected high-risk containers, quarantines suspicious sessions without destroying container inventories.
 
-**Version:** 0.2.5
+**Version:** 0.2.7
 
 **Requirements:** Python >=3.11; Endstone API 0.11 (as declared by the plugin). The CI compatibility matrix targets CPython 3.11–3.15.
 
@@ -17,17 +17,17 @@ AntiDupe is an Endstone plugin that limits Bedrock Edition Bundle/container dupl
 - Correlates ContainerOpen (46) with InventoryContent/InventorySlot (49, 50) by container ID to correlate suspicion.
 - Quarantines suspicious windows without automatically replacing blocks. Item metadata text is not typed Bundle identity.
 - Keeps irrelevant packet callbacks inexpensive; optional performance counters are disabled by default.
-- On protocol **2193**, immediately guards an outbound ChangeDimension (61) until the matching server dimension-completion event and one subsequent scheduler tick. Standalone inventory packets (30, 147) are blocked even without a container session.
+- On protocols **2193 and 2225**, immediately guards an outbound ChangeDimension (61) until the matching server dimension-completion event and one subsequent scheduler tick. Standalone inventory packets (30, 147) are blocked even without a container session.
 
 Protected containers include hoppers, droppers, dispensers, furnaces, smokers, brewing stands, and crafters; hopper minecarts are also guarded. This is a targeted mitigation, **not** a universal anti-dupe solution.
 
 ## Installation
 
-Download the release wheel or build it locally, place `endstone_antidupe-0.2.5-py3-none-any.whl` in the server's `plugins/` directory, remove older AntiDupe wheels, and fully restart BDS. Endstone loads plugin wheels from this directory. Do not use `/reload` to swap Python wheels.
+Download the release wheel or build it locally, then install it in the Python environment used by Endstone with `uv pip install --upgrade ./endstone_antidupe-0.2.7-py3-none-any.whl`. Fully restart BDS; do not use `/reload` to replace the installed plugin.
 
 ## Dimension-transfer protection
 
-The dimension-transfer guard contains the observed unfinished cross-dimension transfer path using public Endstone events only. While waiting it allows Disconnect (5), Respawn (45), NetworkStackLatency (115), selected PlayerAction (36) transition actions (7, 14, 30, 38), validated ServerboundLoadingScreen (312) start/end frames with an optional uint32 ID, validated terrain-loading requests (RequestChunkRadius 69, ClientCacheBlobStatus 135, SubChunkRequest 175), and PlayerAuthInput (144) movement with no actionable flags or embedded mutations. Unknown packet IDs are denied. The protocol-2193 parser independently checks the three mutation optionals, so omitting their declared flags cannot bypass protection. Terrain-loading requests, loading-screen start/end frames, client movement, standing still, teleport ACKs, and player validity are not proof that a transfer completed.
+The dimension-transfer guard contains the observed unfinished cross-dimension transfer path using public Endstone events only. While waiting it allows Disconnect (5), Respawn (45), NetworkStackLatency (115), selected PlayerAction (36) transition actions (7, 14, 30, 38), validated ServerboundLoadingScreen (312) start/end frames with an optional uint32 ID, validated terrain-loading requests (RequestChunkRadius 69, ClientCacheBlobStatus 135, SubChunkRequest 175), and PlayerAuthInput (144) movement with no actionable flags or embedded mutations. Unknown packet IDs are denied. The protocol-2193/2225 parser independently checks the three mutation optionals, so omitting their declared flags cannot bypass protection. Terrain-loading requests, loading-screen start/end frames, client movement, standing still, teleport ACKs, and player validity are not proof that a transfer completed.
 
 After the configured timeout, the connection is quarantined immediately: **all** inbound application packets are cancelled, and a kick for that exact connection is scheduled for the next tick. A replacement connection is not the target of the deferred kick. The plugin reasserts uncancelled kicks for quarantined sessions at HIGHEST priority, but public APIs cannot guarantee disconnection. If the player remains online after the kick, the plugin logs that fact and keeps quarantine until PlayerQuitEvent. A timeout is **not unique proof of a ghost player**; a slow or interrupted legitimate transfer can also time out.
 

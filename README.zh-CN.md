@@ -4,7 +4,7 @@
 
 AntiDupe 是 Endstone 插件，用于限制基岩版中与收纳袋及容器有关的部分物品复制路径。它会拦截高风险容器附近的可疑库存请求，隔离受污染的玩家会话，不会自动破坏或重建容器库存。
 
-**版本：** 0.2.5
+**版本：** 0.2.7
 
 **要求：** Python >=3.11；插件声明使用 Endstone API 0.11。CI 兼容性矩阵面向 CPython 3.11–3.15。
 
@@ -17,17 +17,17 @@ AntiDupe 是 Endstone 插件，用于限制基岩版中与收纳袋及容器有�
 - 按容器 ID 关联 ContainerOpen（46）与 InventoryContent/InventorySlot（49、50），识别容器污染。
 - 对可疑窗口进行非破坏性隔离；物品名称中的文字不能证明物品类型。
 - 尽早跳过无关数据包；可选性能计数器默认关闭。
-- 仅在协议 **2193** 下，从服务端发送 ChangeDimension（61）开始防护，直到收到匹配的服务端维度切换完成事件，再等待一个调度 tick。即使没有容器会话，也会拦截独立库存包（30、147）。
+- 在协议 **2193 和 2225** 下，从服务端发送 ChangeDimension（61）开始防护，直到收到匹配的服务端维度切换完成事件，再等待一个调度 tick。即使没有容器会话，也会拦截独立库存包（30、147）。
 
 受保护的容器包括漏斗、投掷器、发射器、熔炉、烟熏炉、酿造台和合成器，也包括漏斗矿车。这是针对特定路径的缓解措施，**不能防止所有物品复制漏洞**。
 
 ## 安装与升级
 
-下载发布版 wheel，或自行构建，将 `endstone_antidupe-0.2.5-py3-none-any.whl` 放入服务端的 `plugins/` 目录，移除旧版 AntiDupe wheel，然后完整重启 BDS。Endstone 从该目录加载插件 wheel。更新 Python wheel 时不要使用 `/reload`。
+下载发布版 wheel 或自行构建，然后在 Endstone 使用的 Python 环境中运行 `uv pip install --upgrade ./endstone_antidupe-0.2.7-py3-none-any.whl`。完整重启 BDS，不要通过 `/reload` 替换已安装的插件。
 
 ## 维度切换防护
 
-插件通过公开的 Endstone 事件限制已观察到的未完成跨维度传送路径。等待传送完成时，仅允许以下数据包：Disconnect（5）、Respawn（45）、NetworkStackLatency（115）、PlayerAction（36）中的指定过渡动作（7、14、30、38）、通过格式校验的 ServerboundLoadingScreen（312）开始/结束消息（可带一个可选的 uint32 ID）、通过格式校验的地形加载请求（RequestChunkRadius 69、ClientCacheBlobStatus 135、SubChunkRequest 175），以及不含可操作标志或嵌入修改请求的 PlayerAuthInput（144）移动数据。未知包 ID 会被拒绝。协议 2193 解析器会独立检查三个可选修改字段，因此省略相应的声明标志也无法绕过防护。
+插件通过公开的 Endstone 事件限制已观察到的未完成跨维度传送路径。等待传送完成时，仅允许以下数据包：Disconnect（5）、Respawn（45）、NetworkStackLatency（115）、PlayerAction（36）中的指定过渡动作（7、14、30、38）、通过格式校验的 ServerboundLoadingScreen（312）开始/结束消息（可带一个可选的 uint32 ID）、通过格式校验的地形加载请求（RequestChunkRadius 69、ClientCacheBlobStatus 135、SubChunkRequest 175），以及不含可操作标志或嵌入修改请求的 PlayerAuthInput（144）移动数据。未知包 ID 会被拒绝。协议 2193/2225 解析器会独立检查三个可选修改字段，因此省略相应的声明标志也无法绕过防护。
 
 地形加载请求、加载界面开始/结束消息、玩家移动、静止、传送确认和玩家对象有效，都不能证明传送已经完成。
 
