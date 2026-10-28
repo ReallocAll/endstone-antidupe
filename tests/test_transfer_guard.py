@@ -573,6 +573,7 @@ def test_supported_protocol_transfer_blocks_mutations_until_server_completion(pr
     assert not plugin.logger.messages
 
     start(plugin, player, target=2)
+    timeout = plugin.server.scheduler.tasks.pop()
     assert not receive(plugin, player, 144, auth_input_2193()).is_cancelled
     assert receive(plugin, player, 144, auth_input_2193([36])).is_cancelled
     assert receive(plugin, player, 30).is_cancelled
@@ -580,6 +581,7 @@ def test_supported_protocol_transfer_blocks_mutations_until_server_completion(pr
     complete(plugin, player, target=2)
     assert receive(plugin, player, 30).is_cancelled
     assert plugin.server.scheduler.run_next() == 1
+    timeout[0]()  # A stale timeout must not re-quarantine a completed transfer.
     assert not receive(plugin, player, 30).is_cancelled
 
 
